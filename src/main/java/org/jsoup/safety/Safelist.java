@@ -528,6 +528,23 @@ public class Safelist {
      * @return true if allowed
      */
     public boolean isSafeAttribute(String tagName, Element el, Attribute attr) {
+        return attributeStatus(tagName, el, attr) == AttributeStatus.Allowed;
+    }
+
+    /**
+     * Test the supplied attribute against this safelist for this tag, and report the detailed outcome. This is the
+     * same test as {@link #isSafeAttribute(String, Element, Attribute)} (which returns {@code true} only when this
+     * method returns {@link AttributeStatus#Allowed}), with the reason an attribute is not allowed made explicit.
+     * Used by {@link Cleaner#cleanWithReport(org.jsoup.nodes.Document, int, int)} to explain removals in its audit
+     * report.
+     * <p>This method does not modify the input element or attribute.</p>
+     * @param tagName tag to consider allowing the attribute in
+     * @param el element under test, to confirm protocol
+     * @param attr attribute under test
+     * @return the detailed status of the attribute under this safelist
+     * @since 1.24.1
+     */
+    public AttributeStatus attributeStatus(String tagName, Element el, Attribute attr) {
         TagName tag = TagName.valueOf(tagName);
         AttributeKey key = AttributeKey.valueOf(attr.getKey());
 
@@ -536,19 +553,43 @@ public class Safelist {
             if (protocols.containsKey(tag)) {
                 Map<AttributeKey, Set<Protocol>> attrProts = protocols.get(tag);
                 // ok if not defined protocol; otherwise test
-                return !attrProts.containsKey(key) || isSafeProtocol(getProtocolValue(el, attr), attrProts.get(key));
+                return !attrProts.containsKey(key) || isSafeProtocol(getProtocolValue(el, attr), attrProts.get(key))
+                    ? AttributeStatus.Allowed : AttributeStatus.DisallowedProtocol;
             } else { // attribute found, no protocols defined, so OK
-                return true;
+                return AttributeStatus.Allowed;
             }
         }
         Map<AttributeKey, AttributeValue> enforcedSet = enforcedAttributes.get(tag);
-        if (enforcedSet != null && enforcedSet.containsKey(key)) {
-            // enforced attr key was LCed via AttributeKey.valueOf(attr.getKey()),
-            // if the input already has that exact value, treat it as safe
-            return enforcedSet.get(key).equals(AttributeValue.valueOf(attr.getValue()));
-        }
+        boolean enforced = enforcedSet != null && enforcedSet.containsKey(key);
+        // enforced attr key was LCed via AttributeKey.valueOf(attr.getKey()),
+        // if the input already has that exact value, treat it as safe
+        if (enforced && enforcedSet.get(key).equals(AttributeValue.valueOf(attr.getValue())))
+            return AttributeStatus.Allowed;
         // no attributes defined for tag, try :all tag
-        return !tagName.equals(All) && isSafeAttribute(All, el, attr);
+        if (!tagName.equals(All)) {
+            AttributeStatus all = attributeStatus(All, el, attr);
+            if (all == AttributeStatus.Allowed) return all;
+            if (!enforced) return all; // e.g. a protocol failure found via the :all tag
+        }
+        // not allowed as-is, but an enforced attribute will be set on the output element
+        return enforced ? AttributeStatus.Enforced : AttributeStatus.DisallowedAttribute;
+    }
+
+    /**
+     The result of testing an attribute against a {@link Safelist}, via
+     {@link Safelist#attributeStatus(String, Element, Attribute)}.
+     @since 1.24.1
+     */
+    public enum AttributeStatus {
+        /** The attribute is allowed for the tag. */
+        Allowed,
+        /** The attribute is not allowed for the tag, and will be removed. */
+        DisallowedAttribute,
+        /** The attribute is allowed for the tag, but its value's protocol is not allowed; it will be removed. */
+        DisallowedProtocol,
+        /** The attribute is not allowed as-is, but its key matches an enforced attribute that the Cleaner will set
+         on the output element (overriding this value). */
+        Enforced
     }
 
     private String getProtocolValue(Element el, Attribute attr) {

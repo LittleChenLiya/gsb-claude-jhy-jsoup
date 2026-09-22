@@ -70,6 +70,50 @@ public class Cleaner {
     }
 
     /**
+     Creates a new, clean document from the original dirty document, exactly as {@link #clean(Document)} does, and
+     additionally returns an audit report of every removal and enforced-attribute override decided during that single
+     cleaning pass. The original document is not modified, and the cleaned document is identical to the result of
+     {@link #clean(Document)} for the same input and safelist.
+     <p>
+     Each {@link CleaningAction} in the report carries the path of the affected node in the original document
+     (computed from stable child indexes before cleaning), its source position when position tracking was enabled
+     during parse (otherwise {@link CleaningAction#UnknownSource}), and the action and reason decided by the safelist
+     (disallowed tag, attribute, or protocol; unsupported node; enforced attribute).
+     <p>
+     Removed source values are not captured by default; pass a {@code maxValueLength} greater than {@code 0} to
+     include a length-limited summary of each removed or overridden value in the report. When the number of actions
+     exceeds {@code maxActions}, cleaning continues unaffected and the report is marked
+     {@link CleaningReport#isTruncated() truncated}, with the count of unrecorded actions available via
+     {@link CleaningReport#omittedActions()}.
+     <p>Example:
+     <pre>{@code
+     Cleaner cleaner = new Cleaner(Safelist.basic());
+     CleaningReport report = cleaner.cleanWithReport(Jsoup.parse(dirtyHtml), 100, 0);
+     Document clean = report.document();
+     for (CleaningAction action : report.actions())
+         System.out.println(action.path() + " " + action.type() + " " + action.reason());
+     }</pre>
+     @param dirtyDocument Untrusted base document to clean.
+     @param maxActions maximum number of actions to record in the report; cleaning itself is never limited
+     @param maxValueLength maximum length of removed or overridden source values to capture in the report, or
+     {@code 0} to not capture values
+     @return the cleaned document and its audit report
+     @since 1.24.1
+     */
+    public CleaningReport cleanWithReport(Document dirtyDocument, int maxActions, int maxValueLength) {
+        Validate.notNull(dirtyDocument);
+        Validate.isTrue(maxActions >= 0, "maxActions must be >= 0");
+        Validate.isTrue(maxValueLength >= 0, "maxValueLength must be >= 0");
+
+        CleaningAudit audit = new CleaningAudit(maxActions, maxValueLength);
+        Document clean = Document.createShell(dirtyDocument.baseUri());
+        copySafeNodes(dirtyDocument.body(), clean.body(), audit);
+        clean.outputSettings(dirtyDocument.outputSettings().clone());
+
+        return new CleaningReport(clean, audit.actions, audit.omitted);
+    }
+
+    /**
      Determines if the input document's <b>body</b> is valid, against the safelist. It is considered valid if all the
      tags and attributes in the input HTML are allowed by the safelist, and that there is no content in the
      <code>head</code>.
@@ -139,10 +183,12 @@ public class Cleaner {
         private int numDiscarded = 0;
         private final Element root;
         private Element destination; // current element to append nodes to
+        private final CleaningAudit audit; // may be null, when not reporting
 
-        private CleaningVisitor(Element root, Element destination) {
+        private CleaningVisitor(Element root, Element destination, CleaningAudit audit) {
             this.root = root;
             this.destination = destination;
+            this.audit = audit;
         }
 
         @Override public void head(Node source, int depth) {
@@ -150,7 +196,7 @@ public class Cleaner {
                 Element sourceEl = (Element) source;
 
                 if (safelist.isSafeTag(sourceEl.normalName())) { // safe, clone and copy safe attrs
-                    ElementMeta meta = createSafeElement(sourceEl);
+                    ElementMeta meta = createSafeElement(sourceEl, audit);
                     Element destChild = meta.el;
                     destination.appendChild(destChild);
 
@@ -158,6 +204,7 @@ public class Cleaner {
                     destination = destChild;
                 } else if (source != root) { // not a safe tag, so don't add. don't count root against discarded.
                     numDiscarded++;
+                    if (audit != null) audit.removedElement(sourceEl);
                 }
             } else if (source instanceof TextNode) {
                 TextNode sourceText = (TextNode) source;
@@ -169,6 +216,7 @@ public class Cleaner {
                 destination.appendChild(destData);
             } else { // else, we don't care about comments, xml proc instructions, etc
                 numDiscarded++;
+                if (audit != null) audit.removedNode(source);
             }
         }
 
@@ -180,12 +228,16 @@ public class Cleaner {
     }
 
     private int copySafeNodes(Element source, Element dest) {
-        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest);
+        return copySafeNodes(source, dest, null);
+    }
+
+    private int copySafeNodes(Element source, Element dest, CleaningAudit audit) {
+        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest, audit);
         cleaningVisitor.traverse(source);
         return cleaningVisitor.numDiscarded;
     }
 
-    private ElementMeta createSafeElement(Element sourceEl) {
+    private ElementMeta createSafeElement(Element sourceEl, CleaningAudit audit) {
         Element dest = sourceEl.shallowClone(); // reuses tag, clones attributes and preserves any user data
         String sourceTag = sourceEl.tagName();
         Attributes destAttrs = dest.attributes();
@@ -194,7 +246,8 @@ public class Cleaner {
         int numDiscarded = 0;
         Attributes sourceAttrs = sourceEl.attributes();
         for (Attribute sourceAttr : sourceAttrs) {
-            if (safelist.isSafeAttribute(sourceTag, sourceEl, sourceAttr)) { // will keep this attr
+            Safelist.AttributeStatus status = safelist.attributeStatus(sourceTag, sourceEl, sourceAttr);
+            if (status == Safelist.AttributeStatus.Allowed) { // will keep this attr
                 String key = sourceAttr.getKey();
                 String value = sourceAttr.getValue();
 
@@ -206,8 +259,12 @@ public class Cleaner {
                 Range.AttributeRange range = sourceAttrs.sourceRange(key);
                 destAttrs.put(key, value);
                 NodeInternals.attributeRange(destAttrs, key, range);
-            } else
+            } else {
                 numDiscarded++;
+                // an Enforced attribute is reported by the enforced-attributes pass below, as an override
+                if (audit != null && status != Safelist.AttributeStatus.Enforced)
+                    audit.removedAttribute(sourceEl, sourceAttr, status);
+            }
         }
 
         Attributes enforcedAttrs = safelist.getEnforcedAttributes(sourceTag);
@@ -227,6 +284,13 @@ public class Cleaner {
 
         // apply enforced attributes case-insensitively, so a preserved-case source attr is canonicalized to the enforced key
         for (Attribute enforcedAttr : enforcedAttrs) {
+            if (audit != null) {
+                boolean present = sourceAttrs.hasKeyIgnoreCase(enforcedAttr.getKey());
+                String prev = present ? sourceAttrs.getIgnoreCase(enforcedAttr.getKey()) : null;
+                // record additions and overrides; an already-matching value is a no-op
+                if (!present || !prev.equals(enforcedAttr.getValue()))
+                    audit.enforcedAttribute(sourceEl, sourceAttrs, enforcedAttr, prev);
+            }
             destAttrs.removeIgnoreCase(enforcedAttr.getKey());
             destAttrs.put(enforcedAttr.getKey(), enforcedAttr.getValue());
         }
