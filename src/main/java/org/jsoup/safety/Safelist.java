@@ -558,6 +558,23 @@ public class Safelist {
         return value;
     }
 
+    /**
+     Test if the supplied attribute's key is allowed for the tag, but its value fails the configured protocol check.
+     Used by the Cleaner to explain attribute removals in audit reports.
+     */
+    boolean failsProtocolCheck(String tagName, Element el, Attribute attr) {
+        TagName tag = TagName.valueOf(tagName);
+        AttributeKey key = AttributeKey.valueOf(attr.getKey());
+
+        Set<AttributeKey> okSet = attributes.get(tag);
+        if (okSet != null && okSet.contains(key)) {
+            Map<AttributeKey, Set<Protocol>> attrProts = protocols.get(tag);
+            return attrProts != null && attrProts.containsKey(key)
+                && !isSafeProtocol(getProtocolValue(el, attr), attrProts.get(key));
+        }
+        return !tagName.equals(All) && failsProtocolCheck(All, el, attr);
+    }
+
     private boolean isSafeProtocol(String value, Set<Protocol> protocols) {
         for (Protocol protocol : protocols) {
             String prot = protocol.toString();
