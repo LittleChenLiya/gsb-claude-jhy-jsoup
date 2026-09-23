@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><title>TableGrid fixture</title></head>
+<body>
+<!-- Fixture for org.jsoup.nodes.TableGrid: spans, rowspan=0, multiple row groups, nested table, header scoping. -->
+<table id="main">
+  <thead>
+    <tr><th id="h-name" scope="col">Name</th><th id="h-q" scope="col" colspan="2">Quarters</th></tr>
+  </thead>
+  <tbody>
+    <tr><th id="r-alpha" scope="row">Alpha</th><td id="d10" headers="h-q r-alpha r-alpha missing">10</td><td id="d20">20</td></tr>
+    <tr><td id="tailed" rowspan="0">tailed</td><td id="badspan" colspan="abc">badspan</td><td id="c22">c</td></tr>
+    <tr><td id="d31">d</td><td id="e31">e</td></tr>
+  </tbody>
+  <tbody>
+    <tr><td id="nested"><table id="inner"><tr><td>inner</td></tr></table></td><td id="x41">x</td></tr>
+  </tbody>
+  <tfoot>
+    <tr><th id="plain">plain</th><td id="f1">f1</td><td id="f2">f2</td></tr>
+  </tfoot>
+</table>
+</body>
+</html>
