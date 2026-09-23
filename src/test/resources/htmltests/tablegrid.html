@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head><title>TableGrid fixture</title></head>
+<body>
+<!-- Acceptance table: row 1 = A(rowspan=2) B(colspan=2); row 2 = C D.
+     Expected grid: [A, B, B] / [A, C, D] -->
+<table id="acceptance">
+  <tr>
+    <td rowspan="2">A</td>
+    <td colspan="2">B</td>
+  </tr>
+  <tr>
+    <td>C</td>
+    <td>D</td>
+  </tr>
+</table>
+
+<!-- Multiple tbodies, rowspan=0 confined to its own group, rowspan clamped at group end -->
+<table id="groups">
+  <thead>
+    <tr><th id="h-name" scope="col">Name</th><th id="h-val" scope="col">Value</th></tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="0">g1zero</td><td>g1a</td></tr>
+    <tr><td>g1b</td></tr>
+  </tbody>
+  <tbody>
+    <tr><td rowspan="5">g2clamp</td><td>g2a</td></tr>
+    <tr><td>g2b</td></tr>
+  </tbody>
+  <tfoot>
+    <tr><td colspan="2">foot</td></tr>
+  </tfoot>
+</table>
+
+<!-- Nested table: inner rows must not leak into the outer grid; hole preserved at (1,1) -->
+<table id="nested">
+  <tr>
+    <td>outer-a</td>
+    <td>
+      <table id="inner">
+        <tr><td>inner-1</td><td>inner-2</td></tr>
+        <tr><td>inner-3</td><td>inner-4</td></tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td>outer-c</td>
+  </tr>
+</table>
+
+<!-- Header association: headers attr (with dangling id + duplicate), scope row/col, undeclared scope -->
+<table id="headers">
+  <tr>
+    <th id="c1" scope="col">Q1</th>
+    <th id="c2" scope="col">Q2</th>
+    <th>Undeclared</th>
+  </tr>
+  <tr>
+    <th id="r1" scope="row">North</th>
+    <td headers="c1 r1 c1 missing-id">10</td>
+    <td>20</td>
+  </tr>
+  <tr>
+    <th id="r2" scope="row">South</th>
+    <td>30</td>
+    <td>40</td>
+  </tr>
+</table>
+</body>
+</html>
