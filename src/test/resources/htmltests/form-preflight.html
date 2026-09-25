@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head><title>Form Preflight Fixture</title></head>
+<body>
+<form id="order" action="/order" method="post">
+    <input type="text" name="customer" value="jsoup" required minlength="2" maxlength="20">
+    <input type="text" name="zip" value="abc" pattern="[0-9]{5}">
+    <input type="number" name="quantity" value="2.3" min="0" max="10" step="0.5">
+    <input type="text" name="note" value="" required>
+    <input type="checkbox" name="topping" value="cheese" checked>
+    <input type="checkbox" name="topping" value="bacon" checked>
+    <input type="checkbox" name="topping" value="onion">
+    <select name="sides" multiple>
+        <option value="fries" selected>Fries</option>
+        <option value="salad" selected>Salad</option>
+        <option value="soup">Soup</option>
+    </select>
+    <fieldset disabled>
+        <legend><input type="text" name="legend-note" value="still enabled"></legend>
+        <input type="text" name="locked" value="nope">
+    </fieldset>
+    <input type="submit" name="action" value="save">
+    <input type="submit" name="action" value="delete">
+    <input type="image" name="pin" src="pin.png">
+</form>
+<input type="text" name="external" value="linked" form="order">
+</body>
+</html>
