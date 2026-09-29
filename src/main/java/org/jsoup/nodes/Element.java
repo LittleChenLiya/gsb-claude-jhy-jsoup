@@ -1553,6 +1553,33 @@ public class Element extends Node implements Iterable<Element> {
         return StringUtil.releaseBuilder(accum).trim();
     }
 
+    /**
+     Get a {@link TextProjection} of this element: the same normalized plain text as {@link #text()}, plus a mapping
+     of each character back to its originating {@link TextNode}. Whitespace inside {@code <pre>} and other
+     whitespace-preserving elements is kept verbatim, as with {@link #text()}.
+     @return the text projection
+     @see #textProjection(boolean)
+     @since 1.24.1
+     */
+    public TextProjection textProjection() {
+        return textProjection(true);
+    }
+
+    /**
+     Get a {@link TextProjection} of this element, optionally normalizing whitespace even inside {@code <pre>} and
+     other whitespace-preserving elements. All other text rules are fixed and identical to {@link #text()}:
+     whitespace runs elsewhere are collapsed, block boundaries add a separating space (never a newline), and the
+     contents of {@code <script>} and {@code <style>} are omitted.
+     @param preservePreWhitespace when true, keep the original whitespace inside preformatted elements; when false,
+     collapse it using the same whitespace rule as ordinary elements
+     @return the text projection
+     @see TextProjection
+     @since 1.24.1
+     */
+    public TextProjection textProjection(boolean preservePreWhitespace) {
+        return TextProjection.of(this, preservePreWhitespace);
+    }
+
     private static class TextAccumulator implements NodeVisitor {
         private final StringBuilder accum;
 
@@ -1585,29 +1612,30 @@ public class Element extends Node implements Iterable<Element> {
 
         }
 
-        /** check if an element should separate preceding text during text() */
-        private static boolean needsLeadingTextSeparator(Element element) {
-            return element.isBlock()
-                || element.nameIs("br")
-                || element.tag.is(Tag.TextBoundary) && element.childNodeSize() > 0 && element.hasText();
-        }
+    }
 
-        /** check if an element should separate following text during text() */
-        private static boolean needsTrailingTextSeparator(Element element) {
-            return element.tag.is(Tag.TextBoundary)
-                || !element.tag.isInline()
-                || hasBlockChild(element);
-        }
+    /** check if an element should separate preceding text during text() */
+    static boolean needsLeadingTextSeparator(Element element) {
+        return element.isBlock()
+            || element.nameIs("br")
+            || element.tag.is(Tag.TextBoundary) && element.childNodeSize() > 0 && element.hasText();
+    }
 
-        /** check if an inline wrapper contains direct block children and should close with a separator */
-        private static boolean hasBlockChild(Element element) {
-            for (int i = 0; i < element.childNodeSize(); i++) {
-                Node child = element.childNode(i);
-                if (child instanceof Element && ((Element) child).isBlock())
-                    return true;
-            }
-            return false;
+    /** check if an element should separate following text during text() */
+    static boolean needsTrailingTextSeparator(Element element) {
+        return element.tag.is(Tag.TextBoundary)
+            || !element.tag.isInline()
+            || hasBlockChild(element);
+    }
+
+    /** check if an inline wrapper contains direct block children and should close with a separator */
+    static boolean hasBlockChild(Element element) {
+        for (int i = 0; i < element.childNodeSize(); i++) {
+            Node child = element.childNode(i);
+            if (child instanceof Element && ((Element) child).isBlock())
+                return true;
         }
+        return false;
     }
 
     /**
