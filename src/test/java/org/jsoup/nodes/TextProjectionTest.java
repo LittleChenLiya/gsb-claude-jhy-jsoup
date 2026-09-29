@@ -178,4 +178,37 @@ public class TextProjectionTest {
         assertThrows(IllegalArgumentException.class, () -> projection.mapRange(0, 6));
         assertThrows(IllegalArgumentException.class, () -> projection.sourceAt(5));
     }
+
+    @Test void projectedTextAlwaysEqualsText() {
+        String[] htmls = {
+            "",
+            " ",
+            "plain",
+            "<p>One</p><p>Two</p>",
+            "<a>One</a><a>Two</a>",
+            "<div>x  <span>  y  </span>  z</div>",
+            "<pre>keep  me</pre><p>nor&nbsp;mal</p>",
+            "<script>nope()</script><style>.x{}</style>ok",
+            "<div><p>Nested</p><br><b>bold</b>😀&amp;end\t</div>",
+            "<table><tr><td>A</td><td>B</td></tr></table>",
+        };
+        for (String html : htmls) {
+            Document doc = Jsoup.parse(html);
+            Element body = doc.body();
+            assertEquals(body.text(), body.textProjection().text(), html);
+            // every non-separator char maps to a TextNode and the marks cover the full projected string
+            TextProjection projection = body.textProjection();
+            for (int i = 0; i < projection.length(); i++) {
+                if (projection.sourceAt(i) != null) {
+                    TextSource source = projection.sourceAt(i);
+                    assertNotNull(source.node(), html);
+                    assertTrue(source.start() >= 0 && source.end() <= source.node().getWholeText().length(), html);
+                }
+            }
+            for (TextSource source : projection.sources()) {
+                assertFalse(source.isEmpty(), html);
+                assertNotNull(source.text(), html);
+            }
+        }
+    }
 }
