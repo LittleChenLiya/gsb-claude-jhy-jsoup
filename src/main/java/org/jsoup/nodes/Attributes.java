@@ -17,6 +17,7 @@ import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -692,6 +693,169 @@ public class Attributes implements Iterable<Attribute>, Cloneable {
             }
         }
         return dupes;
+    }
+
+    /**
+     * Creates a copy of these attributes with the attribute names in the {@link RenamePlan} migrated to their new names.
+     * The original attributes (and the node that owns them) are <b>not modified</b>; the migration is applied to a
+     * detached copy that is returned.
+     * <p>
+     * All renames are applied <b>simultaneously</b>, so exchanging two attribute names is possible (e.g. {@code title}
+     * to {@code data-title} and {@code data-title} to {@code title}); each value moves with its source slot. The
+     * migration is rejected if it would make two visible attributes collide on the same name, which covers two sources
+     * being merged into one target, as well as a target name that already exists in the set but is not itself migrated.
+     * For HTML output syntax, names are compared with the usual ASCII case-insensitive rule; for XML syntax, names are
+     * compared case-sensitively.
+     * </p>
+     * <p>
+     * The original attribute order, values, internal metadata slots (such as user-data and source ranges), and
+     * per-attribute user-data ownership are preserved in the copy. Internal metadata is never emitted as a regular
+     * HTML attribute.
+     * </p>
+     * @param plan the explicit plan of old names to new names
+     * @param syntax the output syntax that determines how names are compared for collision checks ({@code html} folds
+     * ASCII case, {@code xml} compares case-sensitively)
+     * @return a new, detached {@code Attributes} instance with the plan applied
+     * @throws IllegalArgumentException if the plan would make two attributes share a name, or overwrite an existing,
+     * unmigrated attribute
+     * @see #migrate(RenamePlan)
+     * @see RenamePlan
+     * @since 1.24.1
+     */
+    public Attributes migrate(RenamePlan plan, Syntax syntax) {
+        Validate.notNull(plan);
+        Validate.notNull(syntax);
+
+        Attributes migrated = clone();
+
+        // Resolve every visible slot's new name up front, so that swaps apply simultaneously and collisions can be
+        // rejected before anything is changed. Remember the exact old/new keys of each matched slot, so that
+        // per-attribute user-data can move with the slot later.
+        String[] resolvedKeys = migrated.keys;
+        int visibleSize = 0;
+        List<String> renamedOldKeys = new ArrayList<>();
+        List<String> renamedNewKeys = new ArrayList<>();
+        for (int i = 0; i < migrated.size; i++) {
+            String key = resolvedKeys[i];
+            assert key != null;
+            if (isInternalKey(key)) continue; // internal metadata is never migrated or compared
+            String newName = plan.targetFor(key, syntax);
+            if (newName != null) {
+                resolvedKeys[i] = newName;
+                renamedOldKeys.add(key);
+                renamedNewKeys.add(newName);
+            }
+            visibleSize++;
+        }
+
+        // Reject duplicates in the resulting set, using the syntax's case sensitivity (same rule as serialization).
+        Set<String> seen = new HashSet<>(visibleSize);
+        for (int i = 0; i < migrated.size; i++) {
+            String key = resolvedKeys[i];
+            assert key != null;
+            if (isInternalKey(key)) continue;
+            String compared = syntax == xml ? key : asciiLowerCase(key);
+            if (!seen.add(compared))
+                throw new IllegalArgumentException(String.format("Attribute rename plan resolves to a duplicate target name: %s", key));
+        }
+
+        // Carry any per-attribute user-data ownership over with the renamed slots. Renames are applied simultaneously
+        // (via a scratch map), so exchanges do not clobber each other's data.
+        if (migrated.hasUserData() && !renamedOldKeys.isEmpty()) {
+            Map<String, Object> userData = migrated.userData();
+            Map<String, Object> movedData = new HashMap<>();
+            for (int r = 0; r < renamedOldKeys.size(); r++) {
+                String oldName = renamedOldKeys.get(r);
+                if (userData.containsKey(oldName))
+                    movedData.put(renamedNewKeys.get(r), userData.remove(oldName));
+            }
+            userData.putAll(movedData);
+        }
+
+        return migrated;
+    }
+
+    /**
+     * Creates a copy of these attributes with the attribute names in the {@link RenamePlan} migrated, using HTML's
+     * ASCII case-insensitive name comparison. The source attributes are not modified.
+     * @param plan the explicit plan of old names to new names
+     * @return a new, detached {@code Attributes} instance with the plan applied
+     * @see #migrate(RenamePlan, Syntax)
+     * @since 1.24.1
+     */
+    public Attributes migrate(RenamePlan plan) {
+        return migrate(plan, Syntax.html);
+    }
+
+    /**
+     * An explicit plan of attribute renames to apply with {@link Attributes#migrate(RenamePlan, Syntax)}.
+     * <p>
+     * A plan is built up with {@link #rename(String, String)} and holds an ordered map of old names to new names.
+     * Renames are applied simultaneously, so exchanges such as {@code title ⇄ data-title} are valid, while merging two
+     * sources onto one target (or overwriting an attribute that is not itself renamed) is rejected when the plan is
+     * applied. Source names in the plan are matched against the attributes using HTML's ASCII case-insensitive
+     * comparison, or case-sensitively in XML mode.
+     * </p>
+     *
+     * @since 1.24.1
+     */
+    public static final class RenamePlan {
+        private final LinkedHashMap<String, String> renames = new LinkedHashMap<>();
+
+        public RenamePlan() {}
+
+        /**
+         * Creates a plan initialized with the old-name to new-name pairs of the given map, in its iteration order.
+         * @param renames old name to new name mappings
+         * @return the populated plan
+         */
+        public static RenamePlan create(Map<String, String> renames) {
+            RenamePlan plan = new RenamePlan();
+            for (Map.Entry<String, String> entry : renames.entrySet())
+                plan.rename(entry.getKey(), entry.getValue());
+            return plan;
+        }
+
+        /**
+         * Records a rename of {@code oldName} to {@code newName}. Recording the same source name again replaces its
+         * earlier target.
+         * @param oldName the existing attribute name to migrate (not empty)
+         * @param newName the new attribute name (not empty)
+         * @return this plan, for chaining
+         */
+        public RenamePlan rename(String oldName, String newName) {
+            Validate.notEmpty(oldName);
+            Validate.notEmpty(newName);
+            if (!oldName.equals(newName))
+                renames.put(oldName, newName);
+            else
+                renames.remove(oldName);
+            return this;
+        }
+
+        /**
+         * Returns an unmodifiable view of the old-name to new-name mappings in this plan.
+         * @return the configured renames, in insertion order
+         */
+        public Map<String, String> renames() {
+            return Collections.unmodifiableMap(renames);
+        }
+
+        /**
+         * Looks up the new name for the given source attribute name, following the syntax's case sensitivity.
+         * @param sourceName the existing attribute name
+         * @param xmlSyntax when {@code true}, names match case-sensitively; otherwise ASCII case is folded
+         * @return the configured new name, or {@code null} if this plan does not rename the source
+         */
+        @Nullable String targetFor(String sourceName, Syntax syntax) {
+            boolean xmlSyntax = syntax == xml;
+            for (Map.Entry<String, String> entry : renames.entrySet()) {
+                String oldName = entry.getKey();
+                if (xmlSyntax ? oldName.equals(sourceName) : equalsIgnoreAsciiCase(oldName, sourceName))
+                    return entry.getValue();
+            }
+            return null;
+        }
     }
 
     private static class Dataset extends AbstractMap<String, String> {
