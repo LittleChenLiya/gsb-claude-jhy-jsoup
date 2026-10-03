@@ -17,6 +17,7 @@ import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -444,6 +445,114 @@ public class Attributes implements Iterable<Attribute>, Cloneable {
             else
                 addObject(attr.getKey(), attr.getValue());
         }
+    }
+
+    /**
+     Returns a copy of these attributes with keys migrated (renamed) according to the supplied plan. The original
+     attributes, and the owning node, are never modified.
+     <p>
+     The plan maps old attribute names to new attribute names. Values travel with their source attribute, so swapping
+     two names (e.g. {@code title -> data-title} and {@code data-title -> title}) exchanges the values along with the
+     names. The relative order of attributes is preserved, and internal attributes (such as user data) are carried
+     over untouched and are never serialized as HTML attributes.
+     </p>
+     <p>
+     Name comparison follows the output syntax: HTML names are compared case-insensitively (ASCII only), while XML
+     names are case-sensitive. Use {@link #migrate(Map, Syntax)} to select XML mode.
+     </p>
+     <p>
+     The whole plan is validated before any rename is applied, and a plan is rejected (with an
+     {@link IllegalArgumentException}) if:
+     </p>
+     <ul>
+     <li>two sources map to the same target (two sources cannot be merged into one target);</li>
+     <li>a target names an existing attribute that is not itself being migrated (an unmigrated attribute cannot be
+     overwritten); or</li>
+     <li>a source matches more than one existing attribute name (possible with case-folded duplicates in HTML mode).</li>
+     </ul>
+     @param plan a map of old attribute names to new attribute names
+     @return a new Attributes instance with the planned renames applied
+     @see #migrate(Map, Syntax)
+     @since 1.24.1
+     */
+    public Attributes migrate(Map<String, String> plan) {
+        return migrate(plan, Syntax.html);
+    }
+
+    /**
+     Returns a copy of these attributes with keys migrated (renamed) according to the supplied plan, using the requested
+     {@link Syntax} for name comparison.
+     @param plan a map of old attribute names to new attribute names
+     @param syntax {@link Syntax#html} for case-insensitive (ASCII) name comparison, or {@link Syntax#xml} for
+     case-sensitive comparison
+     @return a new Attributes instance with the planned renames applied
+     @see #migrate(Map)
+     @since 1.24.1
+     */
+    public Attributes migrate(Map<String, String> plan, Syntax syntax) {
+        Validate.notNull(plan);
+        Validate.notNull(syntax);
+
+        // Validate the whole plan up front, so a conflicting plan never applies partially.
+        Map<String, String> sources = new LinkedHashMap<>(); // comparison key -> target key
+        for (Map.Entry<String, String> entry : plan.entrySet()) {
+            String source = entry.getKey();
+            String target = entry.getValue();
+            Validate.notNull(source, "Migration plan source names must not be null.");
+            Validate.notNull(target, "Migration plan target names must not be null.");
+            Validate.isFalse(isInternalKey(target), String.format("Cannot migrate to internal attribute name '%s'.", target));
+            String sourceKey = comparisonKey(source, syntax);
+            String previous = sources.put(sourceKey, target);
+            Validate.isTrue(previous == null, String.format("Cannot migrate attribute '%s': the plan names the same source more than once.", source));
+        }
+
+        // Two sources may not be merged onto one target.
+        Set<String> targets = new HashSet<>();
+        for (String target : sources.values()) {
+            String targetKey = comparisonKey(target, syntax);
+            Validate.isTrue(targets.add(targetKey), String.format("Cannot migrate attributes: more than one source maps to target '%s'.", target));
+        }
+
+        // Work on a copy, so the original attributes (and their owning node) are never modified.
+        Attributes result = clone();
+
+        // A target that collides with an existing, non-migrated attribute cannot be overwritten.
+        for (int i = 0; i < result.size; i++) {
+            String key = result.keys[i];
+            assert key != null;
+            if (isInternalKey(key)) continue;
+            String keyComparison = comparisonKey(key, syntax);
+            if (sources.containsKey(keyComparison)) continue; // this name is being moved away, so it is free
+            Validate.isTrue(!targets.contains(keyComparison),
+                String.format("Cannot migrate to '%s': an attribute with that name already exists and is not itself migrated.", key));
+        }
+
+        // A source must resolve to exactly one existing attribute.
+        Map<String, Integer> matches = new HashMap<>();
+        for (int i = 0; i < result.size; i++) {
+            String key = result.keys[i];
+            assert key != null;
+            if (isInternalKey(key)) continue;
+            String keyComparison = comparisonKey(key, syntax);
+            if (sources.containsKey(keyComparison))
+                matches.merge(keyComparison, 1, Integer::sum);
+        }
+        for (Map.Entry<String, Integer> entry : matches.entrySet()) {
+            Validate.isTrue(entry.getValue() == 1,
+                String.format("Cannot migrate attribute '%s': it matches more than one existing attribute name.", entry.getKey()));
+        }
+
+        // Apply the renames in place; values stay with their sources, and attribute order is preserved.
+        for (int i = 0; i < result.size; i++) {
+            String key = result.keys[i];
+            assert key != null;
+            if (isInternalKey(key)) continue;
+            String keyComparison = comparisonKey(key, syntax);
+            if (sources.containsKey(keyComparison))
+                result.keys[i] = sources.get(keyComparison);
+        }
+
+        return result;
     }
 
     /**
