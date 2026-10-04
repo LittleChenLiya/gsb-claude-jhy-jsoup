@@ -142,6 +142,61 @@ public class Selector {
     }
 
     /**
+     Find Elements matching the CSS query, limiting the evaluation to at most {@code maxVisited} node visits.
+     <p>Each node the traversal tests against the evaluator is charged one visit, including nodes visited internally by
+     nested selectors such as {@code :has()} (also when nested under {@code :not()} or other combinators). If the
+     budget is exhausted before the traversal finishes, the returned {@link SelectResult} is marked
+     {@link SelectResult#isComplete() incomplete} and contains only the partial matches found so far; a budget of
+     {@code 0} visits no nodes at all. With a sufficiently large budget, the result is complete and identical to
+     {@link #select(String, Element)}. The budget applies only to this call and leaves no state behind: subsequent
+     budgeted or regular selects are unaffected.</p>
+
+     @param query CSS selector
+     @param root root element to descend into
+     @param maxVisited maximum number of nodes to visit; must be {@code >= 0}
+     @return a {@link SelectResult} with the matches, the visit count, and the completion status
+     @throws Selector.SelectorParseException (unchecked) on an invalid CSS query.
+     @since 1.24.1
+     */
+    public static SelectResult selectWithBudget(String query, Element root, int maxVisited) {
+        Validate.notEmpty(query);
+        return selectWithBudget(evaluatorOf(query), root, maxVisited);
+    }
+
+    /**
+     Find Elements matching the Evaluator, limiting the evaluation to at most {@code maxVisited} node visits. See
+     {@link #selectWithBudget(String, Element, int)} for the budget semantics.
+
+     @param evaluator CSS Evaluator
+     @param root root (context) element to start from
+     @param maxVisited maximum number of nodes to visit; must be {@code >= 0}
+     @return a {@link SelectResult} with the matches, the visit count, and the completion status
+     @since 1.24.1
+     */
+    public static SelectResult selectWithBudget(Evaluator evaluator, Element root, int maxVisited) {
+        Validate.notNull(evaluator);
+        Validate.notNull(root);
+        Validate.isTrue(maxVisited >= 0, "maxVisited must be >= 0");
+
+        VisitBudget budget = VisitBudget.start(maxVisited);
+        Elements elements = new Elements();
+        boolean complete;
+        try {
+            Stream<Element> stream = evaluator.wantsNodes() ?
+                Collector.streamNodes(evaluator, root, Element.class) :
+                Collector.stream(evaluator, root);
+            stream.forEach(elements::add);
+            complete = true;
+        } catch (VisitBudget.BudgetExhaustedException e) {
+            complete = false; // partial hits only; do not present as a full match set
+        } finally {
+            VisitBudget.stop(); // no residual budget state for later selects
+            evaluator.reset(); // drops any held memos
+        }
+        return new SelectResult(elements, complete, budget.visited(), maxVisited);
+    }
+
+    /**
      Finds a Stream of elements matching the CSS query.
 
      @param query CSS selector

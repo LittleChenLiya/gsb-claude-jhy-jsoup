@@ -7,6 +7,7 @@ import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jspecify.annotations.Nullable;
 
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -46,7 +47,11 @@ public class Collector {
      */
     public static Stream<Element> stream(Evaluator evaluator, Element root) {
         evaluator.reset();
-        return root.stream().filter(evaluator.asPredicate(root));
+        Predicate<Element> predicate = evaluator.asPredicate(root);
+        return root.stream().filter(element -> {
+            VisitBudget.charge(); // no-op unless a budgeted select is active on this thread
+            return predicate.test(element);
+        });
     }
 
     /**
@@ -62,7 +67,11 @@ public class Collector {
      */
     public static <T extends Node> Stream<T> streamNodes(Evaluator evaluator, Element root, Class<T> type) {
         evaluator.reset();
-        return root.nodeStream(type).filter(evaluator.asNodePredicate(root));
+        Predicate<Node> predicate = evaluator.asNodePredicate(root);
+        return root.nodeStream(type).filter(node -> {
+            VisitBudget.charge(); // no-op unless a budgeted select is active on this thread
+            return predicate.test(node);
+        });
     }
 
     /**

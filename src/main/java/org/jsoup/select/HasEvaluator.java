@@ -84,6 +84,7 @@ final class HasEvaluator extends Evaluator {
         /** Tests only the subject's immediate child nodes. */
         private boolean matchesChild(Element subject) {
             for (Node child = subject.firstChild(); child != null; child = child.nextSibling()) {
+                VisitBudget.charge();
                 if (evaluator.matches(subject, child))
                     return true;
             }
@@ -93,7 +94,9 @@ final class HasEvaluator extends Evaluator {
         /** Tests the subject's next element sibling for a simple {@code +} selector. */
         private boolean matchesNextSibling(Element subject) {
             Element sibling = subject.nextElementSibling();
-            return sibling != null && evaluator.matches(subject, sibling);
+            if (sibling == null) return false;
+            VisitBudget.charge();
+            return evaluator.matches(subject, sibling);
         }
 
         /** Searches the next element sibling tree, as needed by {@code :has(+ div span)}. */
@@ -107,6 +110,7 @@ final class HasEvaluator extends Evaluator {
             boolean nodes = evaluator.wantsNodes();
             for (Node sibling = nodes ? subject.nextSibling() : subject.nextElementSibling(); sibling != null;
                  sibling = nodes ? sibling.nextSibling() : sibling.nextElementSibling()) {
+                VisitBudget.charge();
                 if (evaluator.matches(subject, sibling))
                     return true;
             }
@@ -150,6 +154,7 @@ final class HasEvaluator extends Evaluator {
         /** Tests nodes from the iterator until the evaluator matches one. */
         private boolean matchesAnyNode(Element subject, NodeIterator<Node> nodes) {
             while (nodes.hasNext()) {
+                VisitBudget.charge();
                 if (evaluator.matches(subject, nodes.next()))
                     return true;
             }
