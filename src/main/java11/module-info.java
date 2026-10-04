@@ -2,6 +2,7 @@ module org.jsoup {
     exports org.jsoup;
     exports org.jsoup.helper;
     exports org.jsoup.nodes;
+    exports org.jsoup.outline;
     exports org.jsoup.parser;
     exports org.jsoup.safety;
     exports org.jsoup.select;
