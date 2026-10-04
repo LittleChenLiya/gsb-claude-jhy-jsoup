@@ -6,8 +6,11 @@ import org.jsoup.nodes.Node;
 import org.jsoup.parser.TokenQueue;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
@@ -139,6 +142,134 @@ public class Selector {
         Validate.notNull(evaluator);
         Validate.notNull(root);
         return Collector.collect(evaluator, root);
+    }
+
+    /**
+     Find Elements matching the CSS query, subject to a {@linkplain NodeBudget node-access budget}.
+
+     <p>Unlike {@link #select(String, Element)}, which traverses the whole subtree, this entry stops
+     traversal once the budget is exhausted and returns a {@link BudgetedResult} containing the hits
+     found up to that point plus a flag indicating whether the traversal completed. A partial result
+     is never disguised as a complete one: {@link BudgetedResult#isIncomplete()} reports that the
+     budget was spent.</p>
+
+     <p>The budget is charged along the same traversal and {@link Evaluator} paths as an ordinary
+     select, including the internal traversals performed by {@code :has()}. A budget of {@code 0}
+     accesses no nodes. When the call returns, the budget is cleared from the executing thread, so
+     subsequent ordinary selects are unaffected.</p>
+
+     @param query CSS selector
+     @param root root element to descend into
+     @param budget the node-access budget
+     @return the matched elements and traversal status; {@link BudgetedResult#isComplete()} is
+     {@code true} only if the full traversal completed
+     @throws Selector.SelectorParseException (unchecked) on an invalid CSS query.
+     @see NodeBudget
+     @see BudgetedResult
+     */
+    public static BudgetedResult<Element> select(String query, Element root, NodeBudget budget) {
+        Validate.notEmpty(query);
+        return select(evaluatorOf(query), root, budget);
+    }
+
+    /**
+     Find Elements matching the Evaluator, subject to a {@linkplain NodeBudget node-access budget}.
+
+     @param evaluator CSS Evaluator
+     @param root root (context) element to start from
+     @param budget the node-access budget
+     @return the matched elements and traversal status
+     @see #select(String, Element, NodeBudget)
+     */
+    public static BudgetedResult<Element> select(Evaluator evaluator, Element root, NodeBudget budget) {
+        return budgetedCollect(evaluator, root, budget, Element.class, false);
+    }
+
+    /**
+     Find nodes matching the CSS query, subject to a {@linkplain NodeBudget node-access budget}.
+     Use node pseudo selectors such as {@code ::text}, {@code ::comment}, or {@code ::node} to
+     select leaf nodes.
+
+     @param query CSS selector
+     @param root root element to descend into
+     @param budget the node-access budget
+     @return the matched nodes and traversal status
+     @see #select(String, Element, NodeBudget)
+     */
+    public static BudgetedResult<Node> selectNodes(String query, Element root, NodeBudget budget) {
+        return selectNodes(evaluatorOf(query), root, Node.class, budget);
+    }
+
+    /**
+     Find nodes of the specified type matching the CSS query, subject to a
+     {@linkplain NodeBudget node-access budget}.
+
+     @param query CSS selector
+     @param root root element to descend into
+     @param type the type of node to collect (e.g. {@link Element}, {@link LeafNode}, {@link TextNode})
+     @param budget the node-access budget
+     @param <T> the type of node to collect
+     @return the matched nodes and traversal status
+     @see #select(String, Element, NodeBudget)
+     */
+    public static <T extends Node> BudgetedResult<T> selectNodes(String query, Element root, Class<T> type,
+                                                                  NodeBudget budget) {
+        return selectNodes(evaluatorOf(query), root, type, budget);
+    }
+
+    /**
+     Find nodes of the specified type matching the Evaluator, subject to a
+     {@linkplain NodeBudget node-access budget}.
+
+     @param evaluator CSS Evaluator
+     @param root root element to descend into
+     @param type the type of node to collect
+     @param budget the node-access budget
+     @param <T> the type of node to collect
+     @return the matched nodes and traversal status
+     @see #select(String, Element, NodeBudget)
+     */
+    public static <T extends Node> BudgetedResult<T> selectNodes(Evaluator evaluator, Element root, Class<T> type,
+                                                                 NodeBudget budget) {
+        return budgetedCollect(evaluator, root, budget, type, true);
+    }
+
+    /**
+     Shared implementation: runs a collect with the budget installed on the current thread, and
+     converts a {@link BudgetExhaustedException} into an incomplete result.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T extends Node> BudgetedResult<T> budgetedCollect(Evaluator evaluator, Element root,
+                                                                       NodeBudget budget, Class<T> type,
+                                                                       boolean nodes) {
+        Validate.notNull(evaluator);
+        Validate.notNull(root);
+        Validate.notNull(budget);
+
+        // clear any stale state, then reset evaluator memos so this evaluation is independent
+        NodeBudget.clearCurrent();
+        evaluator.reset();
+
+        if (budget.limit() <= 0) // a zero budget accesses no nodes
+            return new BudgetedResult<>(new ArrayList<>(), false, 0, 0);
+
+        NodeBudget.setCurrent(budget);
+        List<T> hits = new ArrayList<>();
+        boolean complete = true;
+        try {
+            Stream<T> stream = nodes
+                ? Collector.streamNodes(evaluator, root, type)
+                : (Stream<T>) Collector.stream(evaluator, root);
+            Iterator<T> iterator = stream.iterator();
+            while (iterator.hasNext())
+                hits.add(iterator.next());
+        } catch (BudgetExhaustedException e) {
+            complete = false; // partial hits only; never report a complete result
+        } finally {
+            NodeBudget.clearCurrent(); // no residue for subsequent ordinary selects
+            evaluator.reset();         // drop held memos
+        }
+        return new BudgetedResult<>(hits, complete, budget.used(), budget.limit());
     }
 
     /**

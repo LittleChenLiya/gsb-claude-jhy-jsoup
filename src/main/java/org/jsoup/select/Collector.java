@@ -7,6 +7,7 @@ import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jspecify.annotations.Nullable;
 
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -39,6 +40,10 @@ public class Collector {
     /**
      Obtain a Stream of elements by visiting the root and every descendant of root and testing it against the evaluator.
 
+     <p>If a {@link NodeBudget} is {@linkplain NodeBudget#current() in effect}, each node tested is charged one
+     access; when the budget is spent a {@link BudgetExhaustedException} is thrown from the stream. This is the
+     billing point for the ordinary element traversal path.</p>
+
      @param evaluator Evaluator to test elements against
      @param root root of tree to descend
      @return A {@link Stream} of matches
@@ -46,12 +51,15 @@ public class Collector {
      */
     public static Stream<Element> stream(Evaluator evaluator, Element root) {
         evaluator.reset();
-        return root.stream().filter(evaluator.asPredicate(root));
+        Predicate<Element> matcher = evaluator.asPredicate(root);
+        return root.stream().filter(bill(matcher));
     }
 
     /**
      Obtain a Stream of nodes, of the specified type, by visiting the root and every descendant of root and testing it
      against the evaluator.
+
+     <p>If a {@link NodeBudget} is in effect, each node tested is charged one access.</p>
 
      @param evaluator Evaluator to test elements against
      @param root root of tree to descend
@@ -62,7 +70,22 @@ public class Collector {
      */
     public static <T extends Node> Stream<T> streamNodes(Evaluator evaluator, Element root, Class<T> type) {
         evaluator.reset();
-        return root.nodeStream(type).filter(evaluator.asNodePredicate(root));
+        Predicate<Node> matcher = evaluator.asNodePredicate(root);
+        return root.nodeStream(type).filter(bill(matcher));
+    }
+
+    /**
+     Wrap a node predicate so that, when a {@link NodeBudget} is in effect for the current thread, each node tested is
+     charged one access before the predicate runs. Without a budget in effect, the wrapper is a pass-through, so
+     ordinary selects are unaffected.
+     */
+    static <T extends Node> Predicate<T> bill(Predicate<T> matcher) {
+        return node -> {
+            NodeBudget budget = NodeBudget.current();
+            if (budget != null)
+                budget.charge(); // throws BudgetExhaustedException when spent
+            return matcher.test(node);
+        };
     }
 
     /**

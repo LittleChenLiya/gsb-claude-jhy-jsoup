@@ -84,7 +84,7 @@ final class HasEvaluator extends Evaluator {
         /** Tests only the subject's immediate child nodes. */
         private boolean matchesChild(Element subject) {
             for (Node child = subject.firstChild(); child != null; child = child.nextSibling()) {
-                if (evaluator.matches(subject, child))
+                if (matches(subject, child))
                     return true;
             }
             return false;
@@ -93,7 +93,7 @@ final class HasEvaluator extends Evaluator {
         /** Tests the subject's next element sibling for a simple {@code +} selector. */
         private boolean matchesNextSibling(Element subject) {
             Element sibling = subject.nextElementSibling();
-            return sibling != null && evaluator.matches(subject, sibling);
+            return sibling != null && matches(subject, sibling);
         }
 
         /** Searches the next element sibling tree, as needed by {@code :has(+ div span)}. */
@@ -107,7 +107,7 @@ final class HasEvaluator extends Evaluator {
             boolean nodes = evaluator.wantsNodes();
             for (Node sibling = nodes ? subject.nextSibling() : subject.nextElementSibling(); sibling != null;
                  sibling = nodes ? sibling.nextSibling() : sibling.nextElementSibling()) {
-                if (evaluator.matches(subject, sibling))
+                if (matches(subject, sibling))
                     return true;
             }
             return false;
@@ -150,10 +150,23 @@ final class HasEvaluator extends Evaluator {
         /** Tests nodes from the iterator until the evaluator matches one. */
         private boolean matchesAnyNode(Element subject, NodeIterator<Node> nodes) {
             while (nodes.hasNext()) {
-                if (evaluator.matches(subject, nodes.next()))
+                if (matches(subject, nodes.next()))
                     return true;
             }
             return false;
+        }
+
+        /**
+         Test one node against the evaluator, charging the current {@link NodeBudget} if one is in
+         effect. This is the billing point for the internal {@code :has()} traversals, so a
+         {@code :has()} (including one nested inside {@code :not()}) cannot explore a subtree for
+         free.
+         */
+        private boolean matches(Element subject, Node node) {
+            NodeBudget budget = NodeBudget.current();
+            if (budget != null)
+                budget.charge(); // throws BudgetExhaustedException when spent
+            return evaluator.matches(subject, node);
         }
     }
 

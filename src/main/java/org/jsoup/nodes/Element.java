@@ -11,6 +11,8 @@ import org.jsoup.parser.TokenQueue;
 import org.jsoup.select.Collector;
 import org.jsoup.select.Elements;
 import org.jsoup.select.Evaluator;
+import org.jsoup.select.BudgetedResult;
+import org.jsoup.select.NodeBudget;
 import org.jsoup.select.NodeFilter;
 import org.jsoup.select.NodeVisitor;
 import org.jsoup.select.Nodes;
@@ -529,6 +531,40 @@ public class Element extends Node implements Iterable<Element> {
     }
 
     /**
+     Find elements that match the {@link Selector} CSS query, subject to a
+     {@linkplain NodeBudget node-access budget}. Matched elements may include this
+     element, or any of its descendents.
+     <p>If the budget is exhausted before the traversal completes, the returned
+     {@link BudgetedResult} is marked
+     {@linkplain BudgetedResult#isIncomplete() incomplete} and contains only the hits
+     found up to that point. The budget is charged along the same traversal and evaluator paths as an
+     ordinary select, including the internal traversals of {@code :has()}.</p>
+
+     @param cssQuery a {@link Selector} CSS-like query
+     @param budget the node-access budget
+     @return the matched elements and traversal status
+     @see NodeBudget
+     @see BudgetedResult
+     @see Selector#select(String, Element, NodeBudget)
+     */
+    public BudgetedResult<Element> select(String cssQuery, NodeBudget budget) {
+        return Selector.select(cssQuery, this, budget);
+    }
+
+    /**
+     Find elements that match the supplied Evaluator, subject to a
+     {@linkplain NodeBudget node-access budget}.
+
+     @param evaluator an element evaluator
+     @param budget the node-access budget
+     @return the matched elements and traversal status
+     @see #select(String, NodeBudget)
+     */
+    public BudgetedResult<Element> select(Evaluator evaluator, NodeBudget budget) {
+        return Selector.select(evaluator, this, budget);
+    }
+
+    /**
      Selects elements from the given root that match the specified {@link Selector} CSS query, with this element as the
      starting context, and returns them as a lazy Stream. Matched elements may include this element, or any of its
      children.
@@ -662,6 +698,54 @@ public class Element extends Node implements Iterable<Element> {
     public <T extends Node> Nodes<T> selectNodes(String cssQuery, Class<T> type) {
         Validate.notEmpty(cssQuery);
         return selectNodes(evaluatorOf(cssQuery), type);
+    }
+
+    /**
+     Find nodes that match the {@link Selector} CSS query, subject to a
+     {@linkplain NodeBudget node-access budget}. Matched nodes may include this
+     element, or any of its descendents.
+
+     @param cssQuery a {@link Selector} CSS query
+     @param budget the node-access budget
+     @return the matched nodes and traversal status
+     @see NodeBudget
+     @see BudgetedResult
+     @see Selector#selectNodes(String, Element, NodeBudget)
+     */
+    public BudgetedResult<Node> selectNodes(String cssQuery, NodeBudget budget) {
+        return Selector.selectNodes(cssQuery, this, budget);
+    }
+
+    /**
+     Find nodes of the specified type that match the {@link Selector} CSS query, subject to a
+     {@linkplain NodeBudget node-access budget}.
+
+     @param cssQuery a {@link Selector} CSS query
+     @param type the type of node to collect
+     @param budget the node-access budget
+     @param <T> the type of node to collect
+     @return the matched nodes and traversal status
+     @see Selector#selectNodes(String, Element, Class, NodeBudget)
+     */
+    public <T extends Node> BudgetedResult<T> selectNodes(String cssQuery, Class<T> type,
+                                                                            NodeBudget budget) {
+        return Selector.selectNodes(cssQuery, this, type, budget);
+    }
+
+    /**
+     Find nodes of the specified type that match the supplied Evaluator, subject to a
+     {@linkplain NodeBudget node-access budget}.
+
+     @param evaluator an evaluator
+     @param type the type of node to collect
+     @param budget the node-access budget
+     @param <T> the type of node to collect
+     @return the matched nodes and traversal status
+     @see Selector#selectNodes(Evaluator, Element, Class, NodeBudget)
+     */
+    public <T extends Node> BudgetedResult<T> selectNodes(Evaluator evaluator, Class<T> type,
+                                                                            NodeBudget budget) {
+        return Selector.selectNodes(evaluator, this, type, budget);
     }
 
     /**
