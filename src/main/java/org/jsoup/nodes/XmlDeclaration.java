@@ -37,6 +37,15 @@ public class XmlDeclaration extends LeafNode {
     }
 
     /**
+     Returns whether this is a markup declaration ({@code <!name ...>}) rather than an XML declaration
+     ({@code <?name ...?>}).
+     @return true if a markup declaration
+     */
+    public boolean isMarkupDeclaration() {
+        return isMarkupDeclaration;
+    }
+
+    /**
      * Gets the declaration data, without its name or delimiters.
      * @return the declaration data
      */
