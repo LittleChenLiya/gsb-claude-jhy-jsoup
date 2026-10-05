@@ -12,6 +12,7 @@ import org.jsoup.nodes.Attribute;
 import org.jsoup.nodes.Attributes;
 import org.jsoup.nodes.Element;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -556,6 +557,55 @@ public class Safelist {
         if (value.isEmpty() && !StringUtil.hasHttpScheme(attr.getValue()))
             value = attr.getValue(); // if it could not be made abs, run as-is to allow custom unknown protocols
         return value;
+    }
+
+    /**
+     Tests if the attribute key is configured as allowed for this tag (via the attributes set or as an enforced
+     attribute), ignoring value and protocol checks. Used by the {@link Cleaner} to explain removals in a
+     {@link CleaningReport}.
+     */
+    boolean isAllowedAttributeKey(String tagName, String attrKey) {
+        TagName tag = TagName.valueOf(tagName);
+        AttributeKey key = AttributeKey.valueOf(attrKey);
+
+        Set<AttributeKey> okSet = attributes.get(tag);
+        if (okSet != null && okSet.contains(key)) return true;
+        Map<AttributeKey, AttributeValue> enforcedSet = enforcedAttributes.get(tag);
+        if (enforcedSet != null && enforcedSet.containsKey(key)) return true;
+        return !tagName.equals(All) && isAllowedAttributeKey(All, attrKey);
+    }
+
+    /**
+     Tests if the attribute key is an enforced attribute for this tag. Used by the {@link Cleaner} to explain removals
+     in a {@link CleaningReport}.
+     */
+    boolean isEnforcedAttributeKey(String tagName, String attrKey) {
+        TagName tag = TagName.valueOf(tagName);
+        AttributeKey key = AttributeKey.valueOf(attrKey);
+
+        Map<AttributeKey, AttributeValue> enforcedSet = enforcedAttributes.get(tag);
+        if (enforcedSet != null && enforcedSet.containsKey(key)) return true;
+        return !tagName.equals(All) && isEnforcedAttributeKey(All, attrKey);
+    }
+
+    /**
+     Gets the protocols configured for this tag and attribute (falling back to {@code :all}), as strings; empty if
+     none are defined. Used by the {@link Cleaner} to describe the applicable rule in a {@link CleaningReport}.
+     */
+    Set<String> getConfiguredProtocols(String tagName, String attrKey) {
+        TagName tag = TagName.valueOf(tagName);
+        AttributeKey key = AttributeKey.valueOf(attrKey);
+
+        Map<AttributeKey, Set<Protocol>> attrProts = protocols.get(tag);
+        if (attrProts != null) {
+            Set<Protocol> prots = attrProts.get(key);
+            if (prots != null) {
+                Set<String> names = new HashSet<>(prots.size());
+                for (Protocol prot : prots) names.add(prot.toString());
+                return names;
+            }
+        }
+        return tagName.equals(All) ? Collections.emptySet() : getConfiguredProtocols(All, attrKey);
     }
 
     private boolean isSafeProtocol(String value, Set<Protocol> protocols) {

@@ -13,6 +13,7 @@ import org.jsoup.nodes.TextNode;
 import org.jsoup.parser.ParseErrorList;
 import org.jsoup.parser.Parser;
 import org.jsoup.select.NodeVisitor;
+import org.jspecify.annotations.Nullable;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -60,10 +61,28 @@ public class Cleaner {
      @return cleaned document.
      */
     public Document clean(Document dirtyDocument) {
+        return clean(dirtyDocument, null);
+    }
+
+    /**
+     Creates a new, clean document, from the original dirty document, containing only elements allowed by the safelist,
+     and records what was removed or rewritten into the supplied {@link CleaningReport}. The report is filled in during
+     this same cleaning pass (the cleaner does not re-run to infer changes), and does not affect the result: the
+     returned document is identical to the one {@link #clean(Document)} would produce.
+     <p>
+     Report entries reference nodes of the original (dirty) document by identity, so removals can be traced back to
+     their source position. The original document is not modified.
+     </p>
+     @param dirtyDocument Untrusted base document to clean.
+     @param report report to record removals and link conversions into; may be null to skip reporting
+     @return cleaned document.
+     @see CleaningReport
+     */
+    public Document clean(Document dirtyDocument, @Nullable CleaningReport report) {
         Validate.notNull(dirtyDocument);
 
         Document clean = Document.createShell(dirtyDocument.baseUri());
-        copySafeNodes(dirtyDocument.body(), clean.body());
+        copySafeNodes(dirtyDocument.body(), clean.body(), report);
         clean.outputSettings(dirtyDocument.outputSettings().clone());
 
         return clean;
@@ -95,7 +114,7 @@ public class Cleaner {
         Validate.notNull(dirtyDocument);
 
         Document clean = Document.createShell(dirtyDocument.baseUri());
-        int numDiscarded = copySafeNodes(dirtyDocument.body(), clean.body());
+        int numDiscarded = copySafeNodes(dirtyDocument.body(), clean.body(), null);
         return numDiscarded == 0
             && dirtyDocument.head().childNodes().isEmpty(); // because we only look at the body, but we start from a shell, make sure there's nothing in the head
     }
@@ -128,7 +147,7 @@ public class Cleaner {
         ParseErrorList errorList = ParseErrorList.tracking(1);
         List<Node> nodes = Parser.parseFragment(bodyHtml, dirty.body(), baseUri, errorList);
         dirty.body().insertChildren(0, nodes);
-        int numDiscarded = copySafeNodes(dirty.body(), clean.body());
+        int numDiscarded = copySafeNodes(dirty.body(), clean.body(), null);
         return numDiscarded == 0 && errorList.isEmpty();
     }
 
@@ -139,10 +158,14 @@ public class Cleaner {
         private int numDiscarded = 0;
         private final Element root;
         private Element destination; // current element to append nodes to
+        private final @Nullable CleaningReport report; // optional; when set, removals and rewrites are recorded as they happen
+        private @Nullable Node removedAncestor; // innermost removed element whose subtree we are currently in
+        private CleaningReport.@Nullable Entry removedAncestorEntry; // its report entry, collecting folded descendants
 
-        private CleaningVisitor(Element root, Element destination) {
+        private CleaningVisitor(Element root, Element destination, @Nullable CleaningReport report) {
             this.root = root;
             this.destination = destination;
+            this.report = report;
         }
 
         @Override public void head(Node source, int depth) {
@@ -150,7 +173,7 @@ public class Cleaner {
                 Element sourceEl = (Element) source;
 
                 if (safelist.isSafeTag(sourceEl.normalName())) { // safe, clone and copy safe attrs
-                    ElementMeta meta = createSafeElement(sourceEl);
+                    ElementMeta meta = createSafeElement(sourceEl, report);
                     Element destChild = meta.el;
                     destination.appendChild(destChild);
 
@@ -158,6 +181,15 @@ public class Cleaner {
                     destination = destChild;
                 } else if (source != root) { // not a safe tag, so don't add. don't count root against discarded.
                     numDiscarded++;
+                    if (report != null) {
+                        if (removedAncestorEntry != null) // already inside a removed subtree; fold into that removal, don't double count
+                            removedAncestorEntry.noteDiscardedDescendant();
+                        else {
+                            removedAncestor = source;
+                            removedAncestorEntry = report.addRemovedNode(source, CleaningReport.Reason.UnsafeTag,
+                                "tag '" + sourceEl.normalName() + "' is not in the safelist");
+                        }
+                    }
                 }
             } else if (source instanceof TextNode) {
                 TextNode sourceText = (TextNode) source;
@@ -169,6 +201,13 @@ public class Cleaner {
                 destination.appendChild(destData);
             } else { // else, we don't care about comments, xml proc instructions, etc
                 numDiscarded++;
+                if (report != null) {
+                    if (removedAncestorEntry != null) // discarded as part of the removed ancestor's subtree
+                        removedAncestorEntry.noteDiscardedDescendant();
+                    else
+                        report.addRemovedNode(source, CleaningReport.Reason.DiscardedNode,
+                            "node '" + source.nodeName() + "' is not copied by the cleaner");
+                }
             }
         }
 
@@ -176,16 +215,28 @@ public class Cleaner {
             if (source instanceof Element && safelist.isSafeTag(source.normalName())) {
                 destination = destination.parent(); // would have descended, so pop destination stack
             }
+            if (source == removedAncestor) { // leaving the removed subtree; subsequent removals are independent again
+                removedAncestor = null;
+                removedAncestorEntry = null;
+            }
         }
     }
 
     private int copySafeNodes(Element source, Element dest) {
-        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest);
+        return copySafeNodes(source, dest, null);
+    }
+
+    private int copySafeNodes(Element source, Element dest, @Nullable CleaningReport report) {
+        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest, report);
         cleaningVisitor.traverse(source);
         return cleaningVisitor.numDiscarded;
     }
 
     private ElementMeta createSafeElement(Element sourceEl) {
+        return createSafeElement(sourceEl, null);
+    }
+
+    private ElementMeta createSafeElement(Element sourceEl, @Nullable CleaningReport report) {
         Element dest = sourceEl.shallowClone(); // reuses tag, clones attributes and preserves any user data
         String sourceTag = sourceEl.tagName();
         Attributes destAttrs = dest.attributes();
@@ -199,15 +250,28 @@ public class Cleaner {
                 String value = sourceAttr.getValue();
 
                 if (safelist.shouldAbsUrl(sourceTag, key)) { // configured to make absolute urls for this key (href)
-                    value = sourceEl.absUrl(key);
-                    if (value.isEmpty()) // could not be made abs; leave as-is to allow custom unknown protocols
-                        value = sourceAttr.getValue();
+                    String abs = sourceEl.absUrl(key);
+                    if (!abs.isEmpty()) {
+                        if (report != null && !abs.equals(value))
+                            report.addConvertedLink(sourceEl, key, CleaningReport.Conversion.RelativeToAbsolute, value, abs,
+                                "attribute '" + key + "' on <" + sourceTag + "> has safelist protocols; relative URL resolved against the base URI");
+                        value = abs;
+                    } else { // could not be made abs; leave as-is to allow custom unknown protocols
+                        if (report != null)
+                            report.addConvertedLink(sourceEl, key, CleaningReport.Conversion.UnresolvableKept, value, value,
+                                "attribute '" + key + "' on <" + sourceTag + "> could not be resolved against the base URI; original value kept");
+                    }
                 }
                 Range.AttributeRange range = sourceAttrs.sourceRange(key);
                 destAttrs.put(key, value);
                 NodeInternals.attributeRange(destAttrs, key, range);
-            } else
+            } else {
                 numDiscarded++;
+                if (report != null)
+                    report.addRemovedAttribute(sourceEl, sourceAttr.getKey(),
+                        attributeRemovalReason(sourceTag, sourceAttr.getKey()),
+                        attributeRemovalRule(sourceTag, sourceAttr.getKey()));
+            }
         }
 
         Attributes enforcedAttrs = safelist.getEnforcedAttributes(sourceTag);
@@ -232,6 +296,25 @@ public class Cleaner {
         }
         dest.attributes().addAll(destAttrs); // re-attach, if removed in clear
         return new ElementMeta(dest, numDiscarded);
+    }
+
+    /**
+     Explains why {@link Safelist#isSafeAttribute} rejected this attribute, for the report. Determined from the same
+     safelist configuration during the cleaning pass; the attribute's value is never consulted or retained.
+     */
+    private CleaningReport.Reason attributeRemovalReason(String sourceTag, String key) {
+        if (safelist.isAllowedAttributeKey(sourceTag, key) && !safelist.isEnforcedAttributeKey(sourceTag, key))
+            return CleaningReport.Reason.UnsafeProtocol; // key allowed, but its URL protocol failed the safelist
+        return CleaningReport.Reason.UnsafeAttribute;
+    }
+
+    private String attributeRemovalRule(String sourceTag, String key) {
+        if (safelist.isEnforcedAttributeKey(sourceTag, key))
+            return "attribute '" + key + "' on <" + sourceTag + "> does not match the safelist's enforced value";
+        if (safelist.isAllowedAttributeKey(sourceTag, key))
+            return "protocol of attribute '" + key + "' on <" + sourceTag + "> is not in the safelist protocols "
+                + safelist.getConfiguredProtocols(sourceTag, key);
+        return "attribute '" + key + "' is not allowed on <" + sourceTag + "> by the safelist";
     }
 
     private static class ElementMeta {
