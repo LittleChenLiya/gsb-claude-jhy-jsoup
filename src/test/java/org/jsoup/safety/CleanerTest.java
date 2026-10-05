@@ -701,4 +701,165 @@ public class CleanerTest {
         String input = "<style></t</style><img>";
         assertEquals("<style></t</style>", Jsoup.clean(input, policy));
     }
+
+    // Sanitization report tests
+
+    @Test void reportRecordsScriptNodeDeletion() {
+        String html = "<script>alert(1)</script><p>Hello</p>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        Document clean = cleaner.clean(dirty, report);
+
+        assertEquals("<p>Hello</p>", clean.body().html());
+        assertEquals(1, report.deletions().size());
+        SanitizationReport.Deletion deletion = report.deletions().get(0);
+        assertEquals("script", deletion.node().nodeName());
+        assertEquals("tag-not-allowed", deletion.reason());
+        assertNull(deletion.attributeKey());
+    }
+
+    @Test void reportRecordsOnclickAttributeDeletion() {
+        String html = "<p onclick='steal()'>Hello</p>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        assertEquals(1, report.deletions().size());
+        SanitizationReport.Deletion deletion = report.deletions().get(0);
+        assertEquals("p", deletion.node().nodeName());
+        assertEquals("attribute-not-allowed", deletion.reason());
+        assertEquals("onclick", deletion.attributeKey());
+        // verify the dangerous value is not retained
+        assertFalse(deletion.toString().contains("steal"));
+    }
+
+    @Test void reportRecordsDisallowedProtocolDeletion() {
+        String html = "<a href='javascript:alert(1)'>Bad</a><a href='https://example.com'>Good</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        Document clean = cleaner.clean(dirty, report);
+
+        assertEquals("<a>Bad</a><a href=\"https://example.com\">Good</a>", clean.body().html());
+        assertEquals(1, report.deletions().size());
+        SanitizationReport.Deletion deletion = report.deletions().get(0);
+        assertEquals("a", deletion.node().nodeName());
+        assertEquals("protocol-not-allowed", deletion.reason());
+        assertEquals("href", deletion.attributeKey());
+        // verify the dangerous value is not retained
+        assertFalse(deletion.toString().contains("javascript"));
+    }
+
+    @Test void reportPreservesAllowedHttpsLinks() {
+        String html = "<a href='https://example.com'>Good</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        Document clean = cleaner.clean(dirty, report);
+
+        assertEquals("<a href=\"https://example.com\">Good</a>", clean.body().html());
+        assertTrue(report.deletions().isEmpty());
+    }
+
+    @Test void reportCountsScriptSubtreeOnce() {
+        String html = "<script><p>Hello</p></script>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        assertEquals(1, report.deletions().size());
+        assertEquals("script", report.deletions().get(0).node().nodeName());
+        assertEquals("tag-not-allowed", report.deletions().get(0).reason());
+    }
+
+    @Test void reportRecordsRelativeLinkConversion() {
+        String html = "<a href='/foo'>Relative</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.basic());
+        SanitizationReport report = new SanitizationReport();
+        Document clean = cleaner.clean(dirty, report);
+
+        assertEquals("<a href=\"https://example.com/foo\">Relative</a>", clean.body().html());
+        assertEquals(1, report.conversions().size());
+        SanitizationReport.Conversion conversion = report.conversions().get(0);
+        assertEquals("a", conversion.node().nodeName());
+        assertEquals("href", conversion.attributeKey());
+        assertEquals("relative-link", conversion.category());
+    }
+
+    @Test void reportDoesNotRecordAbsoluteLinkConversion() {
+        String html = "<a href='https://example.com'>Absolute</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.basic());
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        assertTrue(report.conversions().isEmpty());
+    }
+
+    @Test void reportCleanResultMatchesCleanWithoutReport() {
+        String html = "<script>alert(1)</script><p onclick='x()'>Hello</p><a href='javascript:alert(1)'>Bad</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+
+        Document cleanWithoutReport = cleaner.clean(dirty);
+        SanitizationReport report = new SanitizationReport();
+        Document cleanWithReport = cleaner.clean(dirty.clone(), report);
+
+        assertEquals(cleanWithoutReport.body().html(), cleanWithReport.body().html());
+    }
+
+    @Test void reportUsesOriginalDomIdentityForPosition() {
+        String html = "<html><body><p id=1>Hello</p><script>alert(1)</script></body></html>";
+        Document dirty = Jsoup.parse(html, "https://example.com/", Parser.htmlParser().setTrackPosition(true));
+        Element script = dirty.expectFirst("script");
+
+        Cleaner cleaner = new Cleaner(Safelist.relaxed().addAttributes("p", "id"));
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        assertEquals(1, report.deletions().size());
+        SanitizationReport.Deletion deletion = report.deletions().get(0);
+        assertSame(script, deletion.node());
+        assertEquals(script.sourceRange(), deletion.node().sourceRange());
+    }
+
+    @Test void reportDoesNotRetainDangerousAttributeValues() {
+        String html = "<a href='javascript:alert(document.cookie)'>XSS</a><p onclick='stealCookies()'>Click</p>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        for (SanitizationReport.Deletion deletion : report.deletions()) {
+            assertNotNull(deletion.attributeKey());
+            // ensure no dangerous value is retained in the report's string representation
+            assertFalse(deletion.toString().contains("javascript"));
+            assertFalse(deletion.toString().contains("stealCookies"));
+        }
+    }
+
+    @Test void reportRecordsMultipleDeletionsWithCorrectReasons() {
+        String html = "<script>alert(1)</script><p onclick='x()'>Hello</p><a href='javascript:alert(1)'>Bad</a><a href='https://example.com'>Good</a>";
+        Document dirty = Jsoup.parseBodyFragment(html, "https://example.com/");
+        Cleaner cleaner = new Cleaner(Safelist.relaxed());
+        SanitizationReport report = new SanitizationReport();
+        cleaner.clean(dirty, report);
+
+        assertEquals(3, report.deletions().size());
+        // script node deletion
+        assertEquals("script", report.deletions().get(0).node().nodeName());
+        assertEquals("tag-not-allowed", report.deletions().get(0).reason());
+        // onclick attribute deletion
+        assertEquals("p", report.deletions().get(1).node().nodeName());
+        assertEquals("attribute-not-allowed", report.deletions().get(1).reason());
+        assertEquals("onclick", report.deletions().get(1).attributeKey());
+        // protocol deletion
+        assertEquals("a", report.deletions().get(2).node().nodeName());
+        assertEquals("protocol-not-allowed", report.deletions().get(2).reason());
+        assertEquals("href", report.deletions().get(2).attributeKey());
+    }
 }

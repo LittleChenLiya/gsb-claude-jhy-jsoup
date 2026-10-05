@@ -528,6 +528,30 @@ public class Safelist {
      * @return true if allowed
      */
     public boolean isSafeAttribute(String tagName, Element el, Attribute attr) {
+        return checkAttribute(tagName, el, attr) == AttributeCheck.SAFE;
+    }
+
+    /**
+     The result of checking an attribute against a safelist.
+     */
+    enum AttributeCheck {
+        /** The attribute is allowed. */
+        SAFE,
+        /** The attribute key is not allowed for this tag. */
+        NOT_ALLOWED,
+        /** The attribute key is allowed, but its protocol is not allowed. */
+        PROTOCOL_NOT_ALLOWED
+    }
+
+    /**
+     Check if the supplied attribute is allowed by this safelist for this tag, returning the reason if not.
+     <p>This method does not modify the input element or attribute.</p>
+     @param tagName tag to consider allowing the attribute in
+     @param el element under test, to confirm protocol
+     @param attr attribute under test
+     @return the check result
+     */
+    AttributeCheck checkAttribute(String tagName, Element el, Attribute attr) {
         TagName tag = TagName.valueOf(tagName);
         AttributeKey key = AttributeKey.valueOf(attr.getKey());
 
@@ -536,19 +560,32 @@ public class Safelist {
             if (protocols.containsKey(tag)) {
                 Map<AttributeKey, Set<Protocol>> attrProts = protocols.get(tag);
                 // ok if not defined protocol; otherwise test
-                return !attrProts.containsKey(key) || isSafeProtocol(getProtocolValue(el, attr), attrProts.get(key));
+                if (!attrProts.containsKey(key)) {
+                    return AttributeCheck.SAFE;
+                } else if (isSafeProtocol(getProtocolValue(el, attr), attrProts.get(key))) {
+                    return AttributeCheck.SAFE;
+                } else {
+                    return AttributeCheck.PROTOCOL_NOT_ALLOWED;
+                }
             } else { // attribute found, no protocols defined, so OK
-                return true;
+                return AttributeCheck.SAFE;
             }
         }
         Map<AttributeKey, AttributeValue> enforcedSet = enforcedAttributes.get(tag);
         if (enforcedSet != null && enforcedSet.containsKey(key)) {
             // enforced attr key was LCed via AttributeKey.valueOf(attr.getKey()),
             // if the input already has that exact value, treat it as safe
-            return enforcedSet.get(key).equals(AttributeValue.valueOf(attr.getValue()));
+            if (enforcedSet.get(key).equals(AttributeValue.valueOf(attr.getValue()))) {
+                return AttributeCheck.SAFE;
+            } else {
+                return AttributeCheck.NOT_ALLOWED;
+            }
         }
         // no attributes defined for tag, try :all tag
-        return !tagName.equals(All) && isSafeAttribute(All, el, attr);
+        if (!tagName.equals(All)) {
+            return checkAttribute(All, el, attr);
+        }
+        return AttributeCheck.NOT_ALLOWED;
     }
 
     private String getProtocolValue(Element el, Attribute attr) {

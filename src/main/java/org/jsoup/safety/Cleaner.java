@@ -60,10 +60,28 @@ public class Cleaner {
      @return cleaned document.
      */
     public Document clean(Document dirtyDocument) {
+        return clean(dirtyDocument, null);
+    }
+
+    /**
+     Creates a new, clean document, from the original dirty document, containing only elements allowed by the safelist,
+     and populates the supplied {@link SanitizationReport} with the nodes and attributes that were removed and the
+     relative link conversions that were applied. The original document is not modified. Only elements from the
+     dirty document's <code>body</code> are used. The OutputSettings of the original document are cloned into the clean
+     document.
+     <p>
+     The report is populated during the same cleaning pass that produces the clean document; it is not necessary to
+     run the cleaner again to obtain the report. The clean result is identical whether or not a report is supplied.
+     </p>
+     @param dirtyDocument Untrusted base document to clean.
+     @param report A report to populate with deletions and conversions, or {@code null} to skip reporting.
+     @return cleaned document.
+     */
+    public Document clean(Document dirtyDocument, SanitizationReport report) {
         Validate.notNull(dirtyDocument);
 
         Document clean = Document.createShell(dirtyDocument.baseUri());
-        copySafeNodes(dirtyDocument.body(), clean.body());
+        copySafeNodes(dirtyDocument.body(), clean.body(), report);
         clean.outputSettings(dirtyDocument.outputSettings().clone());
 
         return clean;
@@ -95,7 +113,7 @@ public class Cleaner {
         Validate.notNull(dirtyDocument);
 
         Document clean = Document.createShell(dirtyDocument.baseUri());
-        int numDiscarded = copySafeNodes(dirtyDocument.body(), clean.body());
+        int numDiscarded = copySafeNodes(dirtyDocument.body(), clean.body(), null);
         return numDiscarded == 0
             && dirtyDocument.head().childNodes().isEmpty(); // because we only look at the body, but we start from a shell, make sure there's nothing in the head
     }
@@ -128,7 +146,7 @@ public class Cleaner {
         ParseErrorList errorList = ParseErrorList.tracking(1);
         List<Node> nodes = Parser.parseFragment(bodyHtml, dirty.body(), baseUri, errorList);
         dirty.body().insertChildren(0, nodes);
-        int numDiscarded = copySafeNodes(dirty.body(), clean.body());
+        int numDiscarded = copySafeNodes(dirty.body(), clean.body(), null);
         return numDiscarded == 0 && errorList.isEmpty();
     }
 
@@ -139,10 +157,13 @@ public class Cleaner {
         private int numDiscarded = 0;
         private final Element root;
         private Element destination; // current element to append nodes to
+        private final SanitizationReport report;
+        private int deletedDepth = 0; // tracks nesting depth of deleted elements, to attribute descendants to the parent deletion
 
-        private CleaningVisitor(Element root, Element destination) {
+        private CleaningVisitor(Element root, Element destination, SanitizationReport report) {
             this.root = root;
             this.destination = destination;
+            this.report = report;
         }
 
         @Override public void head(Node source, int depth) {
@@ -150,7 +171,7 @@ public class Cleaner {
                 Element sourceEl = (Element) source;
 
                 if (safelist.isSafeTag(sourceEl.normalName())) { // safe, clone and copy safe attrs
-                    ElementMeta meta = createSafeElement(sourceEl);
+                    ElementMeta meta = createSafeElement(sourceEl, report);
                     Element destChild = meta.el;
                     destination.appendChild(destChild);
 
@@ -158,6 +179,10 @@ public class Cleaner {
                     destination = destChild;
                 } else if (source != root) { // not a safe tag, so don't add. don't count root against discarded.
                     numDiscarded++;
+                    if (report != null && deletedDepth == 0) {
+                        report.addDeletion(source, "tag-not-allowed", null);
+                    }
+                    deletedDepth++;
                 }
             } else if (source instanceof TextNode) {
                 TextNode sourceText = (TextNode) source;
@@ -169,23 +194,28 @@ public class Cleaner {
                 destination.appendChild(destData);
             } else { // else, we don't care about comments, xml proc instructions, etc
                 numDiscarded++;
+                if (report != null && deletedDepth == 0) {
+                    report.addDeletion(source, "node-type-not-allowed", null);
+                }
             }
         }
 
         @Override public void tail(Node source, int depth) {
             if (source instanceof Element && safelist.isSafeTag(source.normalName())) {
                 destination = destination.parent(); // would have descended, so pop destination stack
+            } else if (source instanceof Element && source != root) {
+                deletedDepth--;
             }
         }
     }
 
-    private int copySafeNodes(Element source, Element dest) {
-        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest);
+    private int copySafeNodes(Element source, Element dest, SanitizationReport report) {
+        CleaningVisitor cleaningVisitor = new CleaningVisitor(source, dest, report);
         cleaningVisitor.traverse(source);
         return cleaningVisitor.numDiscarded;
     }
 
-    private ElementMeta createSafeElement(Element sourceEl) {
+    private ElementMeta createSafeElement(Element sourceEl, SanitizationReport report) {
         Element dest = sourceEl.shallowClone(); // reuses tag, clones attributes and preserves any user data
         String sourceTag = sourceEl.tagName();
         Attributes destAttrs = dest.attributes();
@@ -194,9 +224,11 @@ public class Cleaner {
         int numDiscarded = 0;
         Attributes sourceAttrs = sourceEl.attributes();
         for (Attribute sourceAttr : sourceAttrs) {
-            if (safelist.isSafeAttribute(sourceTag, sourceEl, sourceAttr)) { // will keep this attr
+            Safelist.AttributeCheck check = safelist.checkAttribute(sourceTag, sourceEl, sourceAttr);
+            if (check == Safelist.AttributeCheck.SAFE) { // will keep this attr
                 String key = sourceAttr.getKey();
                 String value = sourceAttr.getValue();
+                String originalValue = value;
 
                 if (safelist.shouldAbsUrl(sourceTag, key)) { // configured to make absolute urls for this key (href)
                     value = sourceEl.absUrl(key);
@@ -206,8 +238,19 @@ public class Cleaner {
                 Range.AttributeRange range = sourceAttrs.sourceRange(key);
                 destAttrs.put(key, value);
                 NodeInternals.attributeRange(destAttrs, key, range);
-            } else
+
+                // record relative link conversions (where the URL was made absolute from a relative value)
+                if (report != null && !value.equals(originalValue)) {
+                    report.addConversion(sourceEl, key, "relative-link");
+                }
+            } else {
                 numDiscarded++;
+                if (report != null) {
+                    String reason = (check == Safelist.AttributeCheck.PROTOCOL_NOT_ALLOWED)
+                        ? "protocol-not-allowed" : "attribute-not-allowed";
+                    report.addDeletion(sourceEl, reason, sourceAttr.getKey());
+                }
+            }
         }
 
         Attributes enforcedAttrs = safelist.getEnforcedAttributes(sourceTag);
